@@ -724,6 +724,24 @@ tr.dim td { color: var(--muted); }
     return { lines: lines, totals: t, other: other };
   }
 
+  /*
+   * What the Overview's "Coming up" panel shows. Withdrawn jobs never appear. The panel leads with the earliest
+   * letting that still has shortlisted jobs that are advertised (or have no status, in older data). Shortlisted jobs
+   * already let with results pending are only counted, with their letting dates. Anything else (unknown status) is left out.
+   * Returns { date, jobs, later, pending: { count, dates, jobs } }; `later` counts advertised jobs on later lettings only.
+   */
+  function comingUp(list) {
+    var sl = (list || []).filter(function (u) { return u && u.shortlisted && u.status !== "withdrawn"; });
+    var adv = sl.filter(function (u) { return !u.status || u.status === "advertised"; });
+    var pend = sl.filter(function (u) { return u.status === "let_results_pending"; });
+    var out = { date: null, jobs: [], later: 0, pending: { count: pend.length, dates: [], jobs: pend } };
+    if (adv.length) { var g = groupUpcoming(adv)[0]; out.date = g.date; out.jobs = g.jobs; out.later = adv.length - g.jobs.length; }
+    var seen = {};
+    pend.forEach(function (u) { if (u.letting_date) seen[u.letting_date] = 1; });
+    out.pending.dates = Object.keys(seen).sort();
+    return out;
+  }
+
   /* Hash state: "#view" or "#view?key=value&key=value". A bare view name keeps working. */
   function parseHash(h, views) {
     h = String(h || "").replace(/^#/, "");
@@ -745,7 +763,7 @@ tr.dim td { color: var(--muted); }
   return {
     bidderTable: bidderTable, bidderNames: bidderNames, bidderDetail: bidderDetail, search: search,
     quantitiesFromContract: quantitiesFromContract, statusLabel: statusLabel, filterUpcoming: filterUpcoming, groupUpcoming: groupUpcoming,
-    upcomingCounties: upcomingCounties, quantitiesFromUpcoming: quantitiesFromUpcoming, upcomingLines: upcomingLines, quoteStats: quoteStats, quoteTotals: quoteTotals,
+    upcomingCounties: upcomingCounties, quantitiesFromUpcoming: quantitiesFromUpcoming, upcomingLines: upcomingLines, comingUp: comingUp, quoteStats: quoteStats, quoteTotals: quoteTotals,
     parseHash: parseHash, buildHash: buildHash, contractBidders: contractBidders,
     isNum: isNum, percentile: percentile, summarize: summarize, applyBasis: applyBasis,
     buildIndex: buildIndex, itemsWithBids: itemsWithBids, filterItemBids: filterItemBids,
@@ -1952,22 +1970,30 @@ tr.dim td { color: var(--muted); }
 
   /* Overview panel: the next letting's shortlisted jobs. Absent when there are none. */
   function comingUpHtml() {
-    var ups = DATA.upcoming.filter(function (u) { return u.shortlisted && u.status !== "withdrawn"; });
-    if (!ups.length) return "";
-    var g = L.groupUpcoming(ups)[0], later = ups.length - g.jobs.length;
-    var h = '<div class="card coming"><div class="head"><h3>Coming up</h3><span class="muted small">' + (g.date ? "Next letting " + date(g.date) : "Next letting date not known") + '</span><div class="spacer"></div><button type="button" class="btn compact" id="ov-up-all">All upcoming jobs</button></div><ul class="coming-list">';
-    g.jobs.slice(0, 8).forEach(function (u) {
-      h += '<li><button type="button" class="linkbtn" data-up="' + esc(u.contract_id) + '">' + esc(u.contract_id) + '</button> <span class="muted">' + counties(u) + (L.isNum(u.seeding_mulching_acres) ? " - " + dec1(u.seeding_mulching_acres) + " ac" : "") +
-        (L.isNum(u.distance_mi) ? " - about " + dec1(u.distance_mi) + " mi" : "") + "</span> " + statusChip(u) + "</li>";
-    });
-    h += "</ul>";
-    if (g.jobs.length > 8) h += '<p class="note">' + (g.jobs.length - 8) + " more shortlisted jobs on this letting.</p>";
-    if (later > 0) h += '<p class="note">' + later + " more shortlisted job" + (later === 1 ? "" : "s") + " in later lettings.</p>";
+    var c = L.comingUp(DATA.upcoming);
+    if (!c.jobs.length && !c.pending.count) return "";
+    var h = '<div class="card coming"><div class="head"><h3>Coming up</h3>' + (c.jobs.length ? '<span class="muted small">' + (c.date ? "Next letting " + date(c.date) : "Next letting date not known") + "</span>" : "") +
+      '<div class="spacer"></div><button type="button" class="btn compact" id="ov-up-all">All upcoming jobs</button></div>';
+    if (c.jobs.length) {
+      h += '<ul class="coming-list">';
+      c.jobs.slice(0, 8).forEach(function (u) {
+        h += '<li><button type="button" class="linkbtn" data-up="' + esc(u.contract_id) + '">' + esc(u.contract_id) + '</button> <span class="muted">' + counties(u) + (L.isNum(u.seeding_mulching_acres) ? " - " + dec1(u.seeding_mulching_acres) + " ac" : "") +
+          (L.isNum(u.distance_mi) ? " - about " + dec1(u.distance_mi) + " mi" : "") + "</span> " + statusChip(u) + "</li>";
+      });
+      h += "</ul>";
+      if (c.jobs.length > 8) h += '<p class="note">' + (c.jobs.length - 8) + " more shortlisted jobs on this letting.</p>";
+      if (c.later > 0) h += '<p class="note">' + c.later + " more shortlisted job" + (c.later === 1 ? "" : "s") + " in later lettings.</p>";
+    }
+    if (c.pending.count) {
+      var ds = c.pending.dates.map(function (d) { return date(d); }), when = ds.length ? ds.length > 1 ? ds.slice(0, -1).join(", ") + " and " + ds[ds.length - 1] : ds[0] : "";
+      h += '<p class="note pending">' + c.pending.count + " shortlisted job" + (c.pending.count === 1 ? "" : "s") + " let " + (when ? when + ", " : "") + 'results pending. <button type="button" class="linkbtn" id="ov-up-pending">View in Upcoming jobs</button></p>';
+    }
     return h + "</div>";
   }
   function bindComing(el) {
     el.querySelectorAll("[data-up]").forEach(function (b) { b.addEventListener("click", function () { openUpcoming(b.getAttribute("data-up")); }); });
     bindClick("ov-up-all", function () { state.upAll = false; state.upSel = null; setView("upcoming", true); });
+    bindClick("ov-up-pending", function () { state.upAll = false; state.upSel = null; state.upCounty = ""; state.upDist = null; setView("upcoming", true); });
   }
 
   /* ---------- Method ---------- */
